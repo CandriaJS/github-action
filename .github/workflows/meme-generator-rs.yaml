@@ -1,0 +1,184 @@
+name: meme-generator-rs
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: '要构建的仓库名称'
+        required: true
+        type: string
+      ref:
+        description: '要构建的分支或标签'
+        required: true
+        type: string
+        default: 'main'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.repository }}-${{ github.event.inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_windows:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+
+    steps:
+      - name: 获取token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 获取用户ID
+        id: get-user-id
+        shell: bash
+        run: |
+          user_id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)
+          echo "user-id=$user_id" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repository }}
+          ref: ${{ github.event.inputs.ref }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: 启用 Rust 缓存
+        uses: swatinem/rust-cache@v2
+
+      - name: 添加目标平台
+        run: rustup target add ${{ matrix.platform.target }}
+
+      - name: 构建目标文件
+        run: cargo build --release --target ${{ matrix.platform.target }} --bin meme --features server
+
+      - name: 构建文件
+        run: |
+          git config --global --add safe.directory (Get-Location).Path
+          New-Item -Path "${{ runner.temp }}/temp/${{ matrix.platform.target }}" -ItemType Directory -Force
+          Copy-Item -Path "target/${{ matrix.platform.target }}/release/meme*" -Destination "${{ runner.temp }}/temp/${{ matrix.platform.target }}" -Recurse
+          Remove-Item -Path "${{ runner.temp }}/temp/${{ matrix.platform.target }}/meme.d", "${{ runner.temp }}/temp/${{ matrix.platform.target }}/meme.pdb" -Force
+          if ((git ls-files | Measure-Object).Count -gt 0) {
+              git rm -rf . | Out-Null
+              Remove-Item -Path "target" -Recurse -Force | Out-Null
+          }
+          Copy-Item -Path "${{ runner.temp }}/temp/${{ matrix.platform.target }}/*" -Destination "." -Recurse
+
+      - name: 获取时间
+        run: |
+          $TIME = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), 'China Standard Time').ToString('yyyy-MM-dd HH:mm:ss')
+          echo "TIME=$TIME" >> $env:GITHUB_ENV
+
+      - name: 提交并推送更改
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          author_email: '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          author_name: '${{ steps.app-token.outputs.app-slug }}[bot]'
+          amend: true
+          force: true
+          message: "上传Windows平台构建文件 [${{ env.TIME }}]"
+          branch: "build-windows"
+          repository: ${{ github.event.inputs.repository }}
+
+
+  build_linux:
+    runs-on: ${{ matrix.platform.runner }}
+    container: ${{ matrix.platform.container }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+
+    steps:
+      - name: 获取token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 获取用户ID
+        id: get-user-id
+        run: |
+          user_id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)
+          echo "user-id=$user_id" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repository }}
+          ref: ${{ github.event.inputs.ref }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: 启用 Rust 缓存
+        uses: swatinem/rust-cache@v2
+
+      - name: 添加目标平台
+        run: rustup target add ${{ matrix.platform.target }}
+
+      - name: 设置 Ninja
+        uses: ashutoshvarma/setup-ninja@master
+
+      - name: 安装依赖
+        uses: ConorMacBride/install-package@v1
+        with:
+          apt: libfontconfig1-dev
+
+      - name: 构建目标文件
+        run: cargo build --release --target ${{ matrix.platform.target }} --bin meme --features server,vendored,embed-freetype
+
+      - name: 构建文件
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          mkdir -p ${{ runner.temp }}/temp/${{ matrix.platform.target }}
+          cp -r target/${{ matrix.platform.target }}/release/meme* ${{ runner.temp }}/temp/${{ matrix.platform.target }}/
+          rm -f ${{ runner.temp }}/temp/${{ matrix.platform.target }}/meme.d ${{ runner.temp }}/temp/${{ matrix.platform.target }}/meme.pdb > /dev/null 2>&1
+          if [ "$(git ls-files | wc -l)" -gt 0 ]; then
+              git rm -rf . > /dev/null 2>&1
+              rm -rf target > /dev/null 2>&1
+              rm -rf ninja_bin > /dev/null 2>&1
+          fi
+          cp -r  ${{ runner.temp }}/temp/${{ matrix.platform.target }}/* ./
+
+      - name: 获取时间
+        shell: bash
+        run: |
+          TIME="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          echo "TIME=$TIME" >> $GITHUB_ENV
+
+      - name: 提交并推送更改
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          author_email: '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          author_name: '${{ steps.app-token.outputs.app-slug }}[bot]'
+          message: "上传Linux平台构建文件 [${{ env.TIME }}]"
+          amend: true
+          force: true
+          branch: "build-linux"
+          repository: ${{ github.event.inputs.repository }}
