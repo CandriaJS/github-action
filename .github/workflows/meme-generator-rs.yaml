@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       repository:
-        description: '要构建的仓库名称'
+        description: "要构建的仓库名称"
         required: true
         type: string
       ref:
-        description: '要构建的分支或标签'
+        description: "要构建的分支或标签"
         required: true
         type: string
-        default: 'main'
+        default: "main"
 
 permissions:
   contents: write
@@ -90,8 +90,8 @@ jobs:
         uses: actions-js/push@master
         with:
           github_token: ${{ steps.app-token.outputs.token }}
-          author_email: '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
-          author_name: '${{ steps.app-token.outputs.app-slug }}[bot]'
+          author_email: "${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+          author_name: "${{ steps.app-token.outputs.app-slug }}[bot]"
           amend: true
           force: true
           directory: ${{ runner.temp }}/temp/${{ matrix.platform.target }}
@@ -99,6 +99,86 @@ jobs:
           branch: "build-windows"
           repository: ${{ github.event.inputs.repository }}
 
+  build_macos:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-aarch64
+
+    steps:
+      - name: 获取token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: 获取用户ID
+        id: get-user-id
+        shell: bash
+        run: |
+          user_id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)
+          echo "user-id=$user_id" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repository }}
+          ref: ${{ github.event.inputs.ref }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: 启用 Rust 缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          prefix-key: meme-generator-rs
+
+      - name: 添加目标平台
+        run: rustup target add ${{ matrix.platform.target }}
+
+      - name: 构建目标文件
+        run: cargo build --release --target ${{ matrix.platform.target }} --bin meme --features server
+
+      - name: 压缩文件
+        uses: vimtor/action-zip@v1.2
+        with:
+          files: target/${{ matrix.platform.target }}/release/meme
+          dest: meme.zip
+
+      - name: 构建文件
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          mkdir -p "${{ runner.temp }}/temp/${{ matrix.platform.target }}"
+          cp -r meme.zip .git "${{ runner.temp }}/temp/${{ matrix.platform.target }}"
+
+      - name: 获取最新提交信息
+        shell: bash
+        run: |
+          echo "commit_msg=$(git log -1 --pretty=format:'%s')" >> $GITHUB_ENV
+
+      - name: 提交并推送更改
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          author_email: "${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+          author_name: "${{ steps.app-token.outputs.app-slug }}[bot]"
+          message: ${{ env.commit_msg }}
+          amend: true
+          force: true
+          directory: ${{ runner.temp }}/temp/${{ matrix.platform.target }}
+          branch: ${{ matrix.platform.target == 'x86_64-apple-darwin' && 'build-macos-x86_64' ||'build-macos-aarch64' }}
+          repository: ${{ github.event.inputs.repository }}
 
   build_linux:
     runs-on: ${{ matrix.platform.runner }}
@@ -174,8 +254,8 @@ jobs:
         uses: actions-js/push@master
         with:
           github_token: ${{ steps.app-token.outputs.token }}
-          author_email: '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
-          author_name: '${{ steps.app-token.outputs.app-slug }}[bot]'
+          author_email: "${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+          author_name: "${{ steps.app-token.outputs.app-slug }}[bot]"
           message: ${{ env.commit_msg }}
           amend: true
           force: true
